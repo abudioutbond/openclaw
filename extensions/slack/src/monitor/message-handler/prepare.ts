@@ -275,7 +275,11 @@ function resolveSlackRoutingContext(params: {
   });
 
   const chatType = isDirectMessage ? "direct" : isGroupDm ? "group" : "channel";
-  const replyToMode = resolveSlackReplyToMode(account, chatType);
+  const baseReplyToMode = resolveSlackReplyToMode(account, chatType);
+  // When sessionPerMention is enabled, force replies into threads for top-level
+  // room messages so each mention's session stays visually grouped.
+  const isTopLevelRoom = isRoomish && !message.thread_ts;
+  const replyToMode = isTopLevelRoom && ctx.threadSessionPerMention ? "all" : baseReplyToMode;
   const threadContext = resolveSlackThreadContext({ message, replyToMode });
   const threadTs = threadContext.incomingThreadTs;
   const isThreadReply = threadContext.isThreadReply;
@@ -291,7 +295,12 @@ function resolveSlackRoutingContext(params: {
   // Top-level channel messages must stay on the per-channel session for continuity.
   // Before this fix, every channel message used its own ts as threadId, creating
   // isolated sessions per message (regression from #10686).
-  const roomThreadId = isThreadReply && threadTs ? threadTs : undefined;
+  const roomThreadId =
+    isThreadReply && threadTs
+      ? threadTs
+      : !isThreadReply && isRoomish && ctx.threadSessionPerMention && threadContext.messageTs
+        ? threadContext.messageTs
+        : undefined;
   const canonicalThreadId = isRoomish ? roomThreadId : isThreadReply ? threadTs : autoThreadId;
   const threadKeys = resolveThreadSessionKeys({
     baseSessionKey: route.sessionKey,

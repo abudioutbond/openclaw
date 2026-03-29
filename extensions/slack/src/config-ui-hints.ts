@@ -69,6 +69,10 @@ export const slackChannelConfigUiHints = {
     label: "Slack Thread Parent Inheritance",
     help: "If true, Slack thread sessions inherit the parent channel transcript (default: false).",
   },
+  "thread.sessionPerMention": {
+    label: "Slack Session Per Mention",
+    help: "When true, each top-level channel @mention creates an isolated thread session (default: false).",
+  },
   "thread.initialHistoryLimit": {
     label: "Slack Thread Initial History Limit",
     help: "Maximum number of existing Slack thread messages to fetch when starting a new thread session (default: 20, set to 0 to disable).",

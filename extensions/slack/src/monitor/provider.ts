@@ -253,6 +253,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   const replyToMode = slackCfg.replyToMode ?? "off";
   const threadHistoryScope = slackCfg.thread?.historyScope ?? "thread";
   const threadInheritParent = slackCfg.thread?.inheritParent ?? false;
+  const threadSessionPerMention = slackCfg.thread?.sessionPerMention ?? false;
   const slashCommand = resolveSlackSlashCommandConfig(opts.slashCommand ?? slackCfg.slashCommand);
   const textLimit = resolveTextChunkLimit(cfg, "slack", account.accountId, {
     fallbackLimit: SLACK_TEXT_LIMIT,
@@ -355,6 +356,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     replyToMode,
     threadHistoryScope,
     threadInheritParent,
+    threadSessionPerMention,
     slashCommand,
     textLimit,
     ackReactionScope,
