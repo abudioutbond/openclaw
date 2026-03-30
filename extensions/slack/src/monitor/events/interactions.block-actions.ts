@@ -1,13 +1,22 @@
 import type { SlackActionMiddlewareArgs } from "@slack/bolt";
 import type { Block, KnownBlock } from "@slack/web-api";
 import { enqueueSystemEvent } from "openclaw/plugin-sdk/channel-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import {
   buildPluginBindingResolvedText,
   parsePluginBindingApprovalCustomId,
   resolvePluginConversationBindingApproval,
 } from "openclaw/plugin-sdk/conversation-runtime";
+import {
+  createOperatorApprovalsGatewayClient,
+  type GatewayClient,
+} from "openclaw/plugin-sdk/gateway-runtime";
 import { dispatchPluginInteractiveHandler } from "openclaw/plugin-sdk/plugin-runtime";
 import { SLACK_REPLY_BUTTON_ACTION_ID, SLACK_REPLY_SELECT_ACTION_ID } from "../../blocks-render.js";
+import {
+  isSlackExecApprovalActionId,
+  parseSlackExecApprovalActionId,
+} from "../../exec-approvals.js";
 import { authorizeSlackSystemEventSender } from "../auth.js";
 import type { SlackMonitorContext } from "../context.js";
 import { escapeSlackMrkdwn } from "../mrkdwn.js";
@@ -712,6 +721,100 @@ async function updateSlackLegacyBlockAction(params: {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Exec approval button handler
+// ---------------------------------------------------------------------------
+
+let approvalGatewayClient: GatewayClient | null = null;
+
+async function getApprovalGatewayClient(cfg: OpenClawConfig): Promise<GatewayClient> {
+  if (approvalGatewayClient) {
+    return approvalGatewayClient;
+  }
+  approvalGatewayClient = await createOperatorApprovalsGatewayClient({
+    config: cfg,
+    clientDisplayName: "Slack Exec Approvals",
+    onEvent: () => {},
+    onHelloOk: () => {},
+    onConnectError: () => {},
+    onClose: () => {
+      approvalGatewayClient = null;
+    },
+  });
+  approvalGatewayClient.start();
+  return approvalGatewayClient;
+}
+
+async function handleSlackExecApprovalButton(params: {
+  ctx: SlackMonitorContext;
+  parsed: ParsedSlackBlockAction;
+  respond?: SlackBlockActionRespond;
+}): Promise<void> {
+  const approval = parseSlackExecApprovalActionId(params.parsed.actionId);
+  if (!approval) {
+    return;
+  }
+
+  const { approvalId, decision } = approval;
+  const isPlugin = approvalId.startsWith("plugin:");
+  const method = isPlugin ? "plugin.approval.resolve" : "exec.approval.resolve";
+
+  const decisionLabel =
+    decision === "allow-once"
+      ? "Allowed (once)"
+      : decision === "allow-always"
+        ? "Allowed (always)"
+        : "Denied";
+  const emoji = decision === "deny" ? ":no_entry:" : ":white_check_mark:";
+
+  params.ctx.runtime.log?.(
+    `slack:exec-approval resolve id=${approvalId.slice(0, 8)} decision=${decision} user=${params.parsed.userId}`,
+  );
+
+  try {
+    const client = await getApprovalGatewayClient(params.ctx.cfg);
+    await client.request(method, { id: approvalId, decision });
+
+    // Update the original message: replace buttons with resolved status.
+    const originalBlocks = params.parsed.typedBody.message?.blocks;
+    if (Array.isArray(originalBlocks) && params.parsed.channelId && params.parsed.messageTs) {
+      const updatedBlocks = originalBlocks
+        .map((block: unknown) => {
+          const typed = block as { type?: string };
+          if (typed.type === "actions") {
+            return {
+              type: "context",
+              elements: [
+                {
+                  type: "mrkdwn",
+                  text: `${emoji} *${decisionLabel}* by <@${params.parsed.userId}>`,
+                },
+              ],
+            };
+          }
+          return block;
+        })
+        .filter((block: unknown) => block != null);
+
+      await updateSlackInteractionMessage({
+        ctx: params.ctx,
+        channelId: params.parsed.channelId,
+        messageTs: params.parsed.messageTs,
+        text: `Exec approval ${decisionLabel}`,
+        blocks: updatedBlocks as (Block | KnownBlock)[],
+      });
+    }
+  } catch (err) {
+    params.ctx.runtime.log?.(
+      `slack:exec-approval error resolving ${approvalId.slice(0, 8)}: ${String(err)}`,
+    );
+    await respondEphemeral(
+      params.respond,
+      `Failed to submit approval: ${String(err)}. The request may have expired.`,
+    );
+  }
+}
+
 async function handleSlackBlockAction(params: {
   ctx: SlackMonitorContext;
   args: SlackActionMiddlewareArgs;
@@ -737,6 +840,11 @@ async function handleSlackBlockAction(params: {
     respond,
   });
   if (!auth.allowed) {
+    return;
+  }
+  // Handle exec/plugin approval buttons (Block Kit interactive buttons).
+  if (isSlackExecApprovalActionId(parsed.actionId)) {
+    await handleSlackExecApprovalButton({ ctx: params.ctx, parsed, respond });
     return;
   }
   const pluginInteractionData = buildSlackPluginInteractionData({
